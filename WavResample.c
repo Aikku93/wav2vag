@@ -23,7 +23,7 @@ static void Resample_GenerateSincWindow(int16_t *Dst, int nMin, int nMax, double
 			Sinc = x ? (sin(x) / x) : 1.0;
 		}
 		double Nuttall; {
-			double x = n / (double)Order - 0.5;
+			double x = n / (double)Order + 0.5;
 			Nuttall  = 0.355768;
 			Nuttall -= 0.487396*cos(x*2.0*M_PI);
 			Nuttall += 0.144232*cos(x*4.0*M_PI);
@@ -90,20 +90,18 @@ static void Resample_Cubic(const int16_t *Src, int nInSamples, int16_t *Dst, int
 
 /**************************************/
 
-static int Resample_Sinc(const int16_t *Src, int nInSamples, int16_t *Dst, int nOutSamples, double Rate, int LoopLen) {
+static int Resample_Sinc(const int16_t *Src, int nInSamples, int16_t *Dst, int nOutSamples, double Rate, int LoopLen, double Ratio) {
 	int n, k;
 
 	//! Generate the sinc sliding window
 	//! This window is NOT symmetric so we can't cheat :(
-	//! NOTE: This can be generated offline if needed, but
-	//! trying to include it with the project would be a pain.
 	const int LP_FIR_ORDER = 33, LP_FIR_HALF_ORDER = LP_FIR_ORDER/2; //! LP_FIR_ORDER must be odd
 	const int FRAC_BITS = 12, FRAC_SCALE = 1<<FRAC_BITS;
 	int16_t *SincWin = malloc(FRAC_SCALE * LP_FIR_ORDER*sizeof(int16_t));
 	if(!SincWin) return 0;
 	for(n=0;n<FRAC_SCALE;n++) {
 		int16_t *Win = SincWin + n*LP_FIR_ORDER;
-		Resample_GenerateSincWindow(Win, -LP_FIR_HALF_ORDER, +LP_FIR_HALF_ORDER, n * (1.0/FRAC_SCALE), LP_FIR_ORDER, 1.0);
+		Resample_GenerateSincWindow(Win, -LP_FIR_HALF_ORDER, +LP_FIR_HALF_ORDER, n * (1.0/FRAC_SCALE), LP_FIR_ORDER, (Ratio < 1.0) ? Ratio : 1.0);
 	}
 
 	//! Filter and then free the sinc window
@@ -126,27 +124,34 @@ static int Resample_Sinc(const int16_t *Src, int nInSamples, int16_t *Dst, int n
 /**************************************/
 
 int16_t *WavResample(int16_t *Src, int nInSamples, int nOutSamples, double ResampleFactor, int ResamplingType, int LoopLen) {
+	double Rate = 1.0 / ResampleFactor;
+	int16_t *Dst = malloc(nOutSamples*sizeof(int16_t)); if(!Dst) return NULL;
+
+	//! Sinc filtering is "special" because the prefilter is
+	//! convolved with the filter window directly.
+	if(ResamplingType == WAVRESAMPLE_SINC) {
+		//! This one can fail to allocate the window buffer, so check return result
+		if(!Resample_Sinc(Src, nInSamples, Dst, nOutSamples, Rate, LoopLen, ResampleFactor)) {
+			free(Dst); Dst = NULL;
+		}
+		return Dst;
+	}
+
 	//! Apply pre-filter?
 	int16_t *PreFiltBuf = NULL;
 	if(ResampleFactor < 1.0) {
 		PreFiltBuf = malloc(nInSamples*sizeof(int16_t));
-		if(!PreFiltBuf) return NULL;
+		if(!PreFiltBuf) { free(Dst); return NULL; }
 		Resample_PreFilter(Src, PreFiltBuf, nInSamples, ResampleFactor, LoopLen);
 		Src = PreFiltBuf;
 	}
 
 	//! Do actual resampling
-	double Rate = 1.0 / ResampleFactor;
-	int16_t *Dst = malloc(nOutSamples*sizeof(int16_t));
-	if(Dst) switch(ResamplingType) {
+	switch(ResamplingType) {
+#if 0 //! This one is already checked for
 		case WAVRESAMPLE_SINC: {
-			//! This one can fail to allocate the window buffer, so check return result
-			if(!Resample_Sinc(Src, nInSamples, Dst, nOutSamples, Rate, LoopLen)) {
-				free(Dst);
-				Dst = NULL;
-			}
 		} break;
-
+#endif
 		case WAVRESAMPLE_CUBIC: {
 			Resample_Cubic(Src, nInSamples, Dst, nOutSamples, Rate, LoopLen);
 		} break;
